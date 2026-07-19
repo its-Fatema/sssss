@@ -25,6 +25,7 @@
     String genderPref = request.getParameter("preferred_gender");
     String minRent = request.getParameter("min_rent");
     String maxRent = request.getParameter("max_rent");
+    String searchCode = request.getParameter("search_code");
 %>
 <!DOCTYPE html>
 <html lang="en">
@@ -61,6 +62,13 @@
         <aside class="filter-sidebar-section">
             <h3 class="section-title">Filter Matrix</h3>
             <form action="index.jsp" method="GET" class="minimalist-filter-form">
+            
+            <!-- START: TEXT FIELD FOR TRACKING CODE SEARCH -->
+                <div class="form-group-item" style="margin-bottom: 15px;">
+                    <label class="field-label" style="font-weight: bold; color: #2563eb;">Search by Room Code</label>
+                    <input type="text" name="search_code" class="form-control-input" placeholder="e.g., RL-00103" value="<%= request.getParameter("search_code") != null ? request.getParameter("search_code") : "" %>" style="border: 1px solid #2563eb;">
+                </div>
+                <!-- END: TEXT FIELD FOR TRACKING CODE SEARCH -->
                 
                 <div class="form-group-item">
                     <label class="field-label">District</label>
@@ -157,37 +165,66 @@
             <hr class="flat-divider" />
 
             <%
-                StringBuilder sql = new StringBuilder(
-                    "SELECT l.*, (SELECT MIN(p.photo_path) FROM LISTING_PHOTOS p WHERE p.listing_id = l.listing_id) as primary_thumb " +
-                    "FROM LISTINGS l WHERE l.status = 'Ad running'"
-                );
+    StringBuilder sql = new StringBuilder(
+        "SELECT l.*, (SELECT MIN(p.photo_path) FROM LISTING_PHOTOS p WHERE p.listing_id = l.listing_id) as primary_thumb " +
+        "FROM LISTINGS l WHERE l.status = 'Ad running'"
+    );
 
-                if (district != null && !district.isEmpty()) sql.append(" AND l.district = ?");
-                if (postOffice != null && !postOffice.isEmpty()) sql.append(" AND l.post_office = ?");
-                if (area != null && !area.isEmpty()) sql.append(" AND l.area = ?");
-                if (genderPref != null && !genderPref.isEmpty()) sql.append(" AND l.preferred_gender = ?");
-                if (minRent != null && !minRent.isEmpty()) sql.append(" AND l.rent >= ?");
-                if (maxRent != null && !maxRent.isEmpty()) sql.append(" AND l.rent <= ?");
+    // START: PARSE DYNAMIC LISTING SEARCH CODE
+    int parsedCodeId = -1;
+    if (searchCode != null && !searchCode.trim().isEmpty()) {
+        String cleanCode = searchCode.trim().toUpperCase().replace("RL-", "");
+        try {
+            parsedCodeId = Integer.parseInt(cleanCode);
+        } catch (NumberFormatException e) {
+            parsedCodeId = -2; // Marker for an invalid code string that won't match any real ID
+        }
+    }
+    // END: PARSE DYNAMIC LISTING SEARCH CODE
 
-                sql.append(" ORDER BY l.publish_date DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY");
+    // Append standard drop-down filter rules
+    if (district != null && !district.isEmpty()) sql.append(" AND l.district = ?");
+    if (postOffice != null && !postOffice.isEmpty()) sql.append(" AND l.post_office = ?");
+    if (area != null && !area.isEmpty()) sql.append(" AND l.area = ?");
+    if (genderPref != null && !genderPref.isEmpty()) sql.append(" AND l.preferred_gender = ?");
+    if (minRent != null && !minRent.isEmpty()) sql.append(" AND l.rent >= ?");
+    if (maxRent != null && !maxRent.isEmpty()) sql.append(" AND l.rent <= ?");
+    
+    // START: APPEND CODE IDENTIFIER CONDITION TO QUERY
+    if (parsedCodeId != -1) {
+        sql.append(" AND l.listing_id = ?");
+    }
+    // END: APPEND CODE IDENTIFIER CONDITION TO QUERY
 
-                int activeAdCardCount = 0;
-                try (Connection conn = DBConnection.getConnection();
-                     PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
-                    
-                    int idx = 1;
-                    if (district != null && !district.isEmpty()) stmt.setString(idx++, district);
-                    if (postOffice != null && !postOffice.isEmpty()) stmt.setString(idx++, postOffice);
-                    if (area != null && !area.isEmpty()) stmt.setString(idx++, area);
-                    if (genderPref != null && !genderPref.isEmpty()) stmt.setString(idx++, genderPref);
-                    if (minRent != null && !minRent.isEmpty()) stmt.setDouble(idx++, Double.parseDouble(minRent));
-                    if (maxRent != null && !maxRent.isEmpty()) stmt.setDouble(idx++, Double.parseDouble(maxRent));
-                    
-                    stmt.setInt(idx++, startRecord);
-                    stmt.setInt(idx++, recordsPerPage);
+    sql.append(" ORDER BY l.publish_date DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY");
+    
+    
+    
+    
+
+    int activeAdCardCount = 0;
+    try (Connection conn = DBConnection.getConnection();
+         PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+        
+        int idx = 1;
+        if (district != null && !district.isEmpty()) stmt.setString(idx++, district);
+        if (postOffice != null && !postOffice.isEmpty()) stmt.setString(idx++, postOffice);
+        if (area != null && !area.isEmpty()) stmt.setString(idx++, area);
+        if (genderPref != null && !genderPref.isEmpty()) stmt.setString(idx++, genderPref);
+        if (minRent != null && !minRent.isEmpty()) stmt.setDouble(idx++, Double.parseDouble(minRent));
+        if (maxRent != null && !maxRent.isEmpty()) stmt.setDouble(idx++, Double.parseDouble(maxRent));
+        
+        // START: BIND CODE IDENTIFIER TO PREPARED STATEMENT
+        if (parsedCodeId != -1) {
+            stmt.setInt(idx++, parsedCodeId);
+        }
+        // END: BIND CODE IDENTIFIER TO PREPARED STATEMENT
+        
+        stmt.setInt(idx++, startRecord);
+        stmt.setInt(idx++, recordsPerPage);
 
                     try (ResultSet rs = stmt.executeQuery()) {
-                        while (rs.next()) {
+                    	while (rs.next()) {
                             activeAdCardCount++;
                             int listingId = rs.getInt("listing_id");
                             String title = rs.getString("title");
@@ -201,6 +238,16 @@
                             if (imageFile == null) {
                                 imageFile = "/images/room-placeholder.png";
                             }
+                            
+                            // START: GENERATE CODE LOOK (e.g., RL-00103)
+                            // START: GENERATE LOCATION-BASED DYNAMIC CODE
+String dbDistrict = rs.getString("district");
+String dbArea = rs.getString("area");
+String firstLetter = (dbDistrict != null && !dbDistrict.trim().isEmpty()) ? dbDistrict.trim().substring(0, 1).toUpperCase() : "R";
+String secondLetter = (dbArea != null && !dbArea.trim().isEmpty()) ? dbArea.trim().substring(0, 1).toUpperCase() : "L";
+String customListingCode = String.format("%s%s-%05d", firstLetter, secondLetter, listingId);
+// END: GENERATE LOCATION-BASED DYNAMIC CODE
+                            // END: GENERATE CODE LOOK
             %>
                             <!-- Unified Structural Room Card[cite: 1] -->
                             <div class="room-display-card">
@@ -208,8 +255,12 @@
                                     <img src="<%= request.getContextPath() + imageFile %>" alt="Room preview Image" class="slider-thumbnail-img">
                                 </div>
                                 <div class="card-details-text-pane">
-                                    <div>
-                                        <h3 style="margin:0 0 8px 0; color:#333;"><%= title %></h3>
+                <div>
+                    <!-- START: SHOW CODE LOOK -->
+                    <span style="font-weight: bold; color: #2563eb; display: block; margin-bottom: 4px;"><%= customListingCode %></span>
+                    <!-- END: SHOW CODE LOOK -->
+
+                    <h3 style="margin:0 0 8px 0; color:#333;"><%= title %></h3>
                                         <p style="margin:4px 0; color:#666;"><strong>Location:</strong> <%= areaName %></p>
                                         <p style="margin:4px 0; color:#666;"><strong>Preference:</strong> Requires <%= prefGender %> Roommates</p>
                                         <p style="margin:4px 0; color:#999; font-size:12px;">Published on: <%= datePub %> | Seats Vacant: <%= reqRoommates %></p>
